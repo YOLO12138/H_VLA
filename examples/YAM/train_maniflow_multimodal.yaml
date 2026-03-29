@@ -46,12 +46,12 @@ framework:
   propr_mask_prob: 0.0
   # "spatial": full spatial tokens per camera (e.g. 196 for ViT, 49 for ConvNeXt)
   # "pooled":  1 global token per camera (fast training)
-  encoder_type: pooled
+  encoder_type: spatial
 
   # --- state injection: "token" or "timestep_concat" ---
   state_injection_mode: timestep_concat
   # --- language injection: "token" or "timestep_concat" ---
-  lang_injection_mode: token
+  lang_injection_mode: timestep_concat
 
   # visual_cond_len is auto-computed from encoder probe passes.
   # Uncomment to override:
