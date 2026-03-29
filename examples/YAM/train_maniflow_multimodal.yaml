@@ -1,0 +1,157 @@
+# ManiFlow Multi-Modal Training Config
+# ======================================
+# Multi-camera RGB + dense XYZ pointmap + robot state
+# Framework: ManiFlowMultiModal
+# Encoder:   CLIP ViT-B/16 (RGB) + ConvNeXtV2-Tiny (pointmap)
+#
+# Camera keys and visual token counts are auto-derived from shape_meta.
+# To use different cameras, change shape_meta.obs and provide a matching
+# collate function (RGB keys must end with "_rgb", pointmap with "_ptmap").
+
+run_id: maniflow_multimodal
+run_root_dir: results/Checkpoints
+seed: 42
+trackers: [jsonl]
+wandb_entity: ""
+wandb_project:
+is_debug: false
+
+framework:
+  name: ManiFlowMultiModal
+  model_name: DiTX
+  # Placeholder for train_hvla.py build_model log (no VLM for ManiFlow)
+  qwenvl:
+    base_vlm: ManiFlowMultiModal
+
+  # --- DiTX architecture ---
+  n_layer: 12 # 12 for full model, 8 for accelerated training
+  n_head: 8
+  n_emb: 768
+  qkv_bias: true
+  qk_norm: true
+  block_type: DiTX
+  obs_as_global_cond: true
+  pre_norm_modality: true
+
+  # --- action / observation horizon ---
+  horizon: 16
+  n_obs_steps: 1
+  n_action_steps: 16
+  num_inference_steps: 10
+
+  # --- encoder ---
+  encoder_output_dim: 768
+  rgb_backbone: vit_base_patch16_clip_224.openai
+  ptmap_backbone: convnextv2_tiny.fcmae_ft_in22k_in1k
+  propr_mask_prob: 0.0
+  # "spatial": full spatial tokens per camera (e.g. 196 for ViT, 49 for ConvNeXt)
+  # "pooled":  1 global token per camera (fast training)
+  encoder_type: pooled
+
+  # --- state injection: "token" or "timestep_concat" ---
+  state_injection_mode: timestep_concat
+  # --- language injection: "token" or "timestep_concat" ---
+  lang_injection_mode: token
+
+  # visual_cond_len is auto-computed from encoder probe passes.
+  # Uncomment to override:
+  # visual_cond_len: 6
+
+  # --- timestep embedding ---
+  diffusion_timestep_embed_dim: 128
+  diffusion_target_t_embed_dim: 128
+
+  # --- consistency flow training ---
+  flow_batch_ratio: 0.75
+  consistency_batch_ratio: 0.25
+  sample_t_mode_flow: beta
+  sample_t_mode_consistency: discrete
+  sample_dt_mode_consistency: uniform
+  sample_target_t_mode: relative
+  denoise_timesteps: 10
+
+  language_conditioned: false
+
+  # --- EMA ---
+  ema:
+    power: 0.75
+    max_value: 0.9999
+    min_value: 0.0
+    inv_gamma: 1.0
+    update_after_step: 0
+
+  # --- image augmentation (RGB only, applied during training) ---
+  random_crop_ratio: 0.95
+  random_rotation_degrees: 5.0
+  color_jitter:
+    brightness: 0.3
+    contrast: 0.4
+    saturation: 0.5
+    hue: 0.08
+
+  # --- RGB normalization (CLIP defaults; change if using a different backbone) ---
+  # rgb_mean: [0.48145466, 0.4578275, 0.40821073]
+  # rgb_std: [0.26862954, 0.26130258, 0.27577711]
+
+  # --- pointmap normalization (camera-space XYZ bounds, always applied) ---
+  # ptmap_min: [-1.0, -1.0, 0.0]
+  # ptmap_max: [1.0, 1.0, 2.0]
+
+  # --- state MLP hidden dimension ---
+  # state_mlp_hidden_dim: 256
+
+  # --- shape_meta: defines cameras, resolution, state/action dims ---
+  # Camera keys ending with "_rgb" → RGB encoder
+  # Camera keys ending with "_ptmap" → pointmap encoder
+  # Image resolution is read from the shape [3, H, W]
+  shape_meta:
+    obs:
+      head_rgb:      {shape: [3, 224, 224]}
+      wrist_r_rgb:   {shape: [3, 224, 224]}
+      wrist_l_rgb:   {shape: [3, 224, 224]}
+      head_ptmap:    {shape: [3, 224, 224]}
+      wrist_r_ptmap: {shape: [3, 224, 224]}
+      wrist_l_ptmap: {shape: [3, 224, 224]}
+      agent_pos:     {shape: [14]}
+    action: {shape: [14]}
+
+datasets:
+  vla_data:
+    dataset_py: lerobot_datasets_yam_multimodal
+    data_root_dir: /path/to/data
+    data_mix: yam_ai2
+    num_workers: 4
+    prefetch_factor: 2   # batches prefetched per worker
+    ptmap_size: 224
+    include_ptmap: true
+    include_state: true
+    per_device_batch_size: 32
+    val_ratio: 0.01   # fraction of episodes held out for validation
+    action_mode: abs   # "abs" (default) | "delta" (a_t - a_{t-1}) | "rel" (a_t - s_t)
+
+trainer:
+  max_train_steps: 1000
+  num_warmup_steps: 500
+  save_interval: 100
+  eval_interval: 100
+  logging_frequency: 100
+  learning_rate:
+    base: 1.0e-4
+  optimizer:
+    name: AdamW
+    betas: [0.9, 0.95]
+    weight_decay: 1.0e-3
+    eps: 1.0e-8
+  lr_scheduler_type: cosine
+  scheduler_specific_kwargs: {}
+    # min_lr: 1.0e-6
+  gradient_clipping: 1.0
+  gradient_accumulation_steps: 1
+  freeze_modules: ""
+  save_format: safetensors
+  is_resume: false
+  resume_epoch: null
+  resume_step: null
+  pretrained_checkpoint: null
+  enable_gradient_checkpointing: false
+  enable_mixed_precision_training: true
