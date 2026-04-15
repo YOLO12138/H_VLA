@@ -1,7 +1,7 @@
 """
 ManiFlow MultiModal Framework (v2 — Pointmap)
 =============================================
-hvla framework wrapper for ManiFlowTransformerMultiModalPolicy.
+hvla framework wrapper for ManiFlowMultiModalPolicy (standalone, no maniflow dependency).
 
 Batch format expected (from collate_fn matching shape_meta):
     {
@@ -25,7 +25,6 @@ Forward output:
 
 import copy
 
-import numpy as np
 import torch
 from omegaconf import OmegaConf
 
@@ -42,16 +41,15 @@ _MANIFLOW_MM_DEFAULTS = OmegaConf.create(
         "encoder_type": "spatial",
         "state_injection_mode": "token",
         "lang_injection_mode": "token",
+        "use_rgb": True,
         "use_ptmap": True,
         "num_inference_steps": 10,
         "obs_as_global_cond": True,
         "qkv_bias": False,
         "qk_norm": False,
-        "encoder_output_dim": 768,
         "rgb_backbone": "vit_base_patch16_clip_224.openai",
         "ptmap_backbone": "convnextv2_tiny.fcmae_ft_in22k_in1k",
         "propr_mask_prob": 0.0,
-        "pre_norm_modality": False,
         "language_conditioned": False,
         "flow_batch_ratio": 0.75,
         "consistency_batch_ratio": 0.25,
@@ -63,7 +61,6 @@ _MANIFLOW_MM_DEFAULTS = OmegaConf.create(
         "diffusion_timestep_embed_dim": 128,
         "diffusion_target_t_embed_dim": 128,
         "use_pc_color": True,
-        "state_mlp_hidden_dim": 256,
         "ptmap_min": [-1.0, -1.0, 0.0],
         "ptmap_max": [1.0, 1.0, 2.0],
         "rgb_mean": None,  # auto-detect from backbone; falls back to CLIP
@@ -92,9 +89,7 @@ class ManiFlowMultiModalFramework(baseframework):
     """
     Consistency Flow training (75 % flow + 25 % consistency) with EMA.
 
-    Identity normaliser for PC / state / action keys.
-    RGB images pass through the normaliser unchanged (LinearNormalizer silently
-    passes keys not in params_dict — confirmed in normalizer.py line 58-59).
+    Data is assumed to be pre-normalized by the dataloader (q99 normalization).
     ImageNet normalisation for the backbone is handled inside MultiModalObsEncoder.
     """
 
@@ -102,26 +97,16 @@ class ManiFlowMultiModalFramework(baseframework):
         super().__init__()
         self.config = config
 
-        from maniflow.policy.maniflow_multimodal_policy import (
-            ManiFlowTransformerMultiModalPolicy,
-        )
-        from maniflow.model.diffusion.ema_model import EMAModel
-        from maniflow.model.common.normalizer import (
-            LinearNormalizer,
-            SingleFieldLinearNormalizer,
-        )
+        from hvla.model.modules.maniflow.flow_policy import ManiFlowMultiModalPolicy
+        from hvla.model.modules.maniflow.ema_model import EMAModel
 
         fw = OmegaConf.merge(_MANIFLOW_MM_DEFAULTS, config.framework)
         shape_meta = OmegaConf.to_container(fw.shape_meta, resolve=True)
 
-        # visual_cond_len is auto-computed by the policy from encoder probe
-        # passes — only pass an explicit override when set in the config.
-        visual_cond_len_override = OmegaConf.select(config.framework, "visual_cond_len", default=None)
-
         # ------------------------------------------------------------------ #
         # Build policy                                                        #
         # ------------------------------------------------------------------ #
-        self.policy = ManiFlowTransformerMultiModalPolicy(
+        self.policy = ManiFlowMultiModalPolicy(
             shape_meta=shape_meta,
             horizon=fw.horizon,
             n_action_steps=fw.n_action_steps,
@@ -131,17 +116,14 @@ class ManiFlowMultiModalFramework(baseframework):
             n_layer=fw.n_layer,
             n_head=fw.n_head,
             n_emb=fw.n_emb,
-            visual_cond_len=visual_cond_len_override,
             qkv_bias=fw.qkv_bias,
             qk_norm=fw.qk_norm,
-            encoder_output_dim=fw.encoder_output_dim,
             rgb_backbone=fw.rgb_backbone,
             ptmap_backbone=fw.ptmap_backbone,
             propr_mask_prob=fw.propr_mask_prob,
             encoder_type=fw.encoder_type,
             state_injection_mode=fw.state_injection_mode,
             lang_injection_mode=fw.lang_injection_mode,
-            pre_norm_modality=fw.pre_norm_modality,
             language_conditioned=fw.language_conditioned,
             flow_batch_ratio=fw.flow_batch_ratio,
             consistency_batch_ratio=fw.consistency_batch_ratio,
@@ -153,8 +135,8 @@ class ManiFlowMultiModalFramework(baseframework):
             diffusion_timestep_embed_dim=fw.diffusion_timestep_embed_dim,
             diffusion_target_t_embed_dim=fw.diffusion_target_t_embed_dim,
             use_pc_color=fw.use_pc_color,
+            use_rgb=fw.use_rgb,
             use_ptmap=fw.use_ptmap,
-            state_mlp_hidden_dim=fw.state_mlp_hidden_dim,
             ptmap_min=list(fw.ptmap_min),
             ptmap_max=list(fw.ptmap_max),
             rgb_mean=list(fw.rgb_mean) if fw.rgb_mean is not None else None,
@@ -163,16 +145,6 @@ class ManiFlowMultiModalFramework(baseframework):
             random_rotation_degrees=fw.random_rotation_degrees,
             color_jitter=OmegaConf.to_container(fw.color_jitter, resolve=True),
         )
-
-        # ------------------------------------------------------------------ #
-        # Identity normaliser: only action and agent_pos need identity.      #
-        # RGB / pointmap keys pass through (norm in encoder).                 #
-        # ------------------------------------------------------------------ #
-        normalizer = LinearNormalizer()
-        identity = SingleFieldLinearNormalizer.create_identity()
-        for key in ("action", "agent_pos"):
-            normalizer.params_dict[key] = identity.params_dict
-        self.policy.set_normalizer(normalizer)
 
         # ------------------------------------------------------------------ #
         # EMA shadow model                                                    #
@@ -188,13 +160,6 @@ class ManiFlowMultiModalFramework(baseframework):
         )
 
     def forward(self, batch: dict) -> dict:
-        # DeepSpeed bf16 mode casts model weights/parameters to BF16.
-        # The normalizer stores stats as plain FP32 tensors (not registered buffers)
-        # so normalizer.normalize() outputs FP32 even with BF16 inputs.
-        # torch.autocast resolves this: F.linear/conv ops auto-cast FP32 inputs to BF16
-        # when weights are BF16. Since all weights are already BF16 (DeepSpeed bf16),
-        # there are no FP32-weight vs BF16-activation elementwise promotions —
-        # the copy_ explosion from the prior FP32-weight + autocast attempt is avoided.
         with torch.autocast("cuda", dtype=torch.bfloat16):
             loss, loss_dict = self.policy.compute_loss(batch, ema_model=self.ema.averaged_model)
 
@@ -220,6 +185,8 @@ class ManiFlowMultiModalFramework(baseframework):
         Delegates to self.policy.predict_action(obs_dict) and returns
         {"normalized_actions": np.ndarray [B, T, D]} as expected by the trainer.
         """
+        import numpy as np
+
         obs_dict = examples["obs"]
         device = next(self.parameters()).device
         obs_dict = {
@@ -231,6 +198,7 @@ class ManiFlowMultiModalFramework(baseframework):
         action_pred = result["action"].cpu().float().numpy()  # [B, n_action_steps, Da]
         return {
             "normalized_actions": action_pred,
+            "action_pred": result.get("action_pred", None),
         }
 
     def get_ema_state(self) -> dict:

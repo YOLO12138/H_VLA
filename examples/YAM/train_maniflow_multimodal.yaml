@@ -31,7 +31,6 @@ framework:
   qk_norm: true
   block_type: DiTX
   obs_as_global_cond: true
-  pre_norm_modality: true
 
   # --- action / observation horizon ---
   horizon: 16
@@ -40,7 +39,6 @@ framework:
   num_inference_steps: 10
 
   # --- encoder ---
-  encoder_output_dim: 768
   rgb_backbone: vit_base_patch16_clip_224.openai
   ptmap_backbone: convnextv2_tiny.fcmae_ft_in22k_in1k
   propr_mask_prob: 0.0
@@ -52,10 +50,6 @@ framework:
   state_injection_mode: timestep_concat
   # --- language injection: "token" or "timestep_concat" ---
   lang_injection_mode: timestep_concat
-
-  # visual_cond_len is auto-computed from encoder probe passes.
-  # Uncomment to override:
-  # visual_cond_len: 6
 
   # --- timestep embedding ---
   diffusion_timestep_embed_dim: 128
@@ -96,9 +90,6 @@ framework:
   # --- pointmap normalization (camera-space XYZ bounds, always applied) ---
   # ptmap_min: [-1.0, -1.0, 0.0]
   # ptmap_max: [1.0, 1.0, 2.0]
-
-  # --- state MLP hidden dimension ---
-  # state_mlp_hidden_dim: 256
 
   # --- shape_meta: defines cameras, resolution, state/action dims ---
   # Camera keys ending with "_rgb" → RGB encoder
