@@ -565,8 +565,8 @@ class VLATrainer(TrainerUtils):
                 "mf_v_flow_pred_magnitude": "debug/flow_pred_magnitude",
                 "mf_v_ct_pred_magnitude":   "debug/consistency_training_pred_magnitude",
                 "mf_bc_loss":               "loss/total",
-                "mf_feature_std":           "debug/feature_std",
-                "mf_feature_dim_std":       "debug/feature_dim_std",
+                "mf_rgb_cond_token_std":    "debug/rgb_token_std",
+                "mf_ptmap_cond_token_std":  "debug/ptmap_token_std",
             }
             step_metrics.update({
                 _mf_key_map[k]: v
