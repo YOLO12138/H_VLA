@@ -125,7 +125,7 @@ trainer:
   num_warmup_steps: 500
   save_interval: 100
   eval_interval: 100
-  logging_frequency: 100
+  logging_frequency: 1
   learning_rate:
     base: 1.0e-4
   optimizer:
